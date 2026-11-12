@@ -89,6 +89,41 @@ Original image                     | Sigma = 0.5                               |
 -----------------------------------|-------------------------------------------|------------------------------------------
 ![srcImage](testdata/flowers_small.png) | ![dstImage](testdata/out_sharpen_0.5.png) | ![dstImage](testdata/out_sharpen_1.5.png)
 
+### Unsharp masking
+
+```go
+// Sharpen using the portrait preset.
+dstImage := imaging.UnsharpMask(srcImage, &imaging.UnsharpMaskPortraitOptions)
+
+// Sharpen using custom parameters.
+dstImage := imaging.UnsharpMask(srcImage, &imaging.UnsharpMaskOptions{
+	Radius:    1.0,
+	Amount:    0.8,
+	Threshold: 1,
+})
+```
+
+`UnsharpMask` sharpens the image using the unsharp masking technique: the difference
+between the image and its Gaussian-blurred copy is scaled by `Amount` and added back.
+It is intended as the final step before saving in batch pipelines.
+
+`UnsharpMaskOptions` parameters:
+- `Radius` - sigma of the Gaussian blur used to build the mask; controls the scale of details that get amplified.
+- `Amount` - strength of the effect; 1.0 adds 100% of the masked difference back.
+- `Threshold` - minimum difference (0-255) that gets amplified; protects flat areas (skin, skies) from noise amplification.
+
+Two presets are provided:
+- `UnsharpMaskPortraitOptions` (Radius 1.0, Amount 0.4, Threshold 2) - gentle, protects skin texture.
+- `UnsharpMaskProductOptions` (Radius 1.0, Amount 0.8, Threshold 1) - stronger, for crisp product edges.
+
+Overshoot control: every output pixel is clamped to the min/max range of its 3x3
+neighborhood in the source image, so sharpening never produces white or black halos
+along edges. If `options` is nil, the portrait preset is used.
+
+Original image                     | Portrait preset                              | Product preset
+-----------------------------------|----------------------------------------------|---------------------------------------------
+![srcImage](testdata/flowers_small.png) | ![dstImage](testdata/out_unsharp_portrait.png) | ![dstImage](testdata/out_unsharp_product.png)
+
 ### Gamma correction
 
 ```go
