@@ -4,7 +4,7 @@ import (
 	"image"
 	"math"
 	"runtime"
-	"sync/atomic"
+	"sync"
 	"testing"
 )
 
@@ -23,25 +23,28 @@ func mustOpen(filename string) image.Image {
 }
 
 func TestParallel(t *testing.T) {
-	for _, n := range []int{0, 1, 10, 100, 1000} {
-		for _, p := range []int{1, 2, 4, 8, 16, 100} {
-			if !testParallelN(n, p) {
-				t.Fatalf("test [parallel %d %d] failed", n, p)
+	for _, n := range []int{0, 1, 10, 100, 1000, 10000} {
+		for _, workers := range []int{1, 2, 4, 8, 16, 100} {
+			for _, chunk := range []int{1, 7, 64, 1000} {
+				if !testParallelN(n, workers, chunk) {
+					t.Fatalf("test [parallel n=%d workers=%d chunk=%d] failed", n, workers, chunk)
+				}
 			}
 		}
 	}
 }
 
-func testParallelN(n, procs int) bool {
+func testParallelN(n, workers, chunk int) bool {
+	SetWorkers(workers)
+	SetChunkSize(chunk)
+	defer SetWorkers(0)
+	defer SetChunkSize(0)
 	data := make([]bool, n)
-	before := runtime.GOMAXPROCS(0)
-	runtime.GOMAXPROCS(procs)
-	parallel(0, n, func(is <-chan int) {
-		for i := range is {
+	parallel(0, n, func(start, stop int) {
+		for i := start; i < stop; i++ {
 			data[i] = true
 		}
 	})
-	runtime.GOMAXPROCS(before)
 	for i := 0; i < n; i++ {
 		if !data[i] {
 			return false
@@ -52,9 +55,9 @@ func testParallelN(n, procs int) bool {
 
 func TestParallelMaxProcs(t *testing.T) {
 	for _, n := range []int{0, 1, 10, 100, 1000} {
-		for _, p := range []int{1, 2, 4, 8, 16, 100} {
-			if !testParallelMaxProcsN(n, p) {
-				t.Fatalf("test [parallel max procs %d %d] failed", n, p)
+		for _, workers := range []int{1, 2, 4, 8, 16, 100} {
+			if !testParallelMaxProcsN(n, workers) {
+				t.Fatalf("test [parallel max procs %d %d] failed", n, workers)
 			}
 		}
 	}
@@ -63,8 +66,8 @@ func TestParallelMaxProcs(t *testing.T) {
 func testParallelMaxProcsN(n, procs int) bool {
 	data := make([]bool, n)
 	SetMaxProcs(procs)
-	parallel(0, n, func(is <-chan int) {
-		for i := range is {
+	parallel(0, n, func(start, stop int) {
+		for i := start; i < stop; i++ {
 			data[i] = true
 		}
 	})
@@ -80,12 +83,147 @@ func testParallelMaxProcsN(n, procs int) bool {
 func TestSetMaxProcs(t *testing.T) {
 	for _, p := range []int{-1, 0, 10} {
 		SetMaxProcs(p)
-		if int(atomic.LoadInt64(&maxProcs)) != p {
+		if workerCount() != defaultWorkers() && p <= 0 {
+			t.Fatalf("test [set max procs %d] failed: expected default", p)
+		}
+		if p > 0 && workerCount() != p {
 			t.Fatalf("test [set max procs %d] failed", p)
 		}
 	}
 
 	SetMaxProcs(0)
+}
+
+func TestSetWorkersAndChunk(t *testing.T) {
+	defer SetWorkers(0)
+	defer SetChunkSize(0)
+
+	SetWorkers(3)
+	if got := workerCount(); got != 3 {
+		t.Fatalf("workerCount = %d, want 3", got)
+	}
+	SetWorkers(0)
+	if got := workerCount(); got != defaultWorkers() {
+		t.Fatalf("workerCount = %d, want default %d", got, defaultWorkers())
+	}
+
+	SetChunkSize(25)
+	if got := chunkSize(); got != 25 {
+		t.Fatalf("chunkSize = %d, want 25", got)
+	}
+	SetChunkSize(0)
+	if got := chunkSize(); got != defaultChunkRows {
+		t.Fatalf("chunkSize = %d, want default %d", got, defaultChunkRows)
+	}
+}
+
+func TestDefaultWorkers(t *testing.T) {
+	want := runtime.NumCPU() / 2
+	if want < 1 {
+		want = 1
+	}
+	if got := defaultWorkers(); got != want {
+		t.Fatalf("defaultWorkers = %d, want %d", got, want)
+	}
+}
+
+// TestParallelMatchesInline verifies that parallel scheduling processes every
+// index exactly once and never duplicates or drops work, regardless of the
+// worker count and chunk size.
+func TestParallelMatchesInline(t *testing.T) {
+	defer SetWorkers(0)
+	defer SetChunkSize(0)
+
+	const n = 5000
+	want := make([]int, n)
+	for i := range want {
+		want[i] = i * 2
+	}
+
+	for _, workers := range []int{1, 2, 3, 8, 32} {
+		for _, chunk := range []int{1, 16, 64, 128, 10000} {
+			SetWorkers(workers)
+			SetChunkSize(chunk)
+
+			got := make([]int, n)
+			var seen sync.Mutex
+			counts := make([]int, n)
+			parallel(0, n, func(start, stop int) {
+				for i := start; i < stop; i++ {
+					got[i] = i * 2
+					seen.Lock()
+					counts[i]++
+					seen.Unlock()
+				}
+			})
+			for i := range want {
+				if got[i] != want[i] || counts[i] != 1 {
+					t.Fatalf("index %d: got value %d count %d, want %d / 1 (workers=%d chunk=%d)",
+						i, got[i], counts[i], want[i], workers, chunk)
+				}
+			}
+		}
+	}
+}
+
+// TestParallelPoolReuse verifies that workers are long-lived: repeated calls
+// reuse the same pool instead of spawning fresh goroutines each time.
+func TestParallelPoolReuse(t *testing.T) {
+	defer SetWorkers(0)
+	SetWorkers(4)
+
+	pool.ensure(4)
+	pool.mu.Lock()
+	before := pool.workers
+	pool.mu.Unlock()
+
+	for i := 0; i < 50; i++ {
+		parallel(0, 10000, func(start, stop int) {
+			sum := 0
+			for j := start; j < stop; j++ {
+				sum += j
+			}
+			_ = sum
+		})
+	}
+
+	pool.mu.Lock()
+	after := pool.workers
+	pool.mu.Unlock()
+	if after != before {
+		t.Fatalf("pool worker count changed from %d to %d across calls", before, after)
+	}
+}
+
+// TestParallelResizeShrinksPool verifies the pool follows a smaller worker
+// setting without leaking goroutines.
+func TestParallelResizeShrinksPool(t *testing.T) {
+	defer SetWorkers(0)
+
+	SetWorkers(8)
+	pool.ensure(8)
+	SetWorkers(2)
+	pool.ensure(2)
+
+	pool.mu.Lock()
+	got := pool.workers
+	pool.mu.Unlock()
+	if got != 2 {
+		t.Fatalf("pool workers = %d, want 2", got)
+	}
+
+	// Work still completes correctly after shrinking.
+	data := make([]bool, 1000)
+	parallel(0, len(data), func(start, stop int) {
+		for i := start; i < stop; i++ {
+			data[i] = true
+		}
+	})
+	for i, done := range data {
+		if !done {
+			t.Fatalf("index %d not processed after shrink", i)
+		}
+	}
 }
 
 func TestClamp(t *testing.T) {

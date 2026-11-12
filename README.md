@@ -154,6 +154,28 @@ orientation tag (if present). Here's the example:
 img, err := imaging.Open("test.jpg", imaging.AutoOrientation(true))
 ```
 
+### Can I control how many CPU cores are used?
+
+Pixel processing is parallelized over a reusable pool of worker goroutines.
+By default the pool uses half of the available CPU cores (at least one), so
+that batch processing leaves headroom for the rest of the program. Each image
+is split into independent, non-overlapping row/column chunks, therefore the
+output is byte-identical to a single-threaded run regardless of the worker
+count.
+
+Override the worker count with `SetWorkers` (a value <= 0 restores the
+default) and the scheduling granularity with `SetChunkSize`. The chunk size
+is the number of rows (or columns) handled per work unit; small images that
+fit in one chunk are processed inline, without any pool overhead.
+
+```go
+imaging.SetWorkers(8)     // use exactly 8 worker goroutines
+imaging.SetChunkSize(128) // schedule 128 rows per work unit
+```
+
+The worker pool is created once and reused across calls and batch tasks;
+standard library primitives only are used (`sync`, `runtime`).
+
 ### What's the difference between `imaging` and `gift` packages?
 
 [imaging](https://github.com/disintegration/imaging)

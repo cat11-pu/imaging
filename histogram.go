@@ -19,11 +19,11 @@ func Histogram(img image.Image) [256]float64 {
 		return histogram
 	}
 
-	parallel(0, src.h, func(ys <-chan int) {
+	parallel(0, src.h, func(start, stop int) {
 		var tmpHistogram [256]float64
 		var tmpTotal float64
 		scanLine := make([]uint8, src.w*4)
-		for y := range ys {
+		for y := start; y < stop; y++ {
 			src.scan(0, y, src.w, y+1, scanLine)
 			i := 0
 			for x := 0; x < src.w; x++ {

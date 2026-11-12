@@ -70,8 +70,8 @@ func convolve(img image.Image, kernel []float64, options *ConvolveOptions) *imag
 		}
 	}
 
-	parallel(0, h, func(ys <-chan int) {
-		for y := range ys {
+	parallel(0, h, func(start, stop int) {
+		for y := start; y < stop; y++ {
 			for x := 0; x < w; x++ {
 				var r, g, b float64
 				for _, c := range coefs {
