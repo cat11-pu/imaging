@@ -69,6 +69,18 @@ func clamp(x float64) uint8 {
 	return 0
 }
 
+// clamp16 rounds and clamps float64 value to fit into uint16.
+func clamp16(x float64) uint16 {
+	v := int64(x + 0.5)
+	if v > 0xffff {
+		return 0xffff
+	}
+	if v > 0 {
+		return uint16(v)
+	}
+	return 0
+}
+
 func reverse(pix []uint8) {
 	if len(pix) <= 4 {
 		return

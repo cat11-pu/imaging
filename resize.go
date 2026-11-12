@@ -3,7 +3,173 @@ package imaging
 import (
 	"image"
 	"math"
+	"sync"
 )
+
+// srgbToLinear converts an sRGB-encoded color component value in range [0, 1]
+// to a linear-light value.
+func srgbToLinear(c float64) float64 {
+	if c <= 0.04045 {
+		return c / 12.92
+	}
+	return math.Pow((c+0.055)/1.055, 2.4)
+}
+
+// linearToSrgb converts a linear-light color component value in range [0, 1]
+// back to the sRGB encoding.
+func linearToSrgb(c float64) float64 {
+	if c <= 0.0031308 {
+		return 12.92 * c
+	}
+	return 1.055*math.Pow(c, 1.0/2.4) - 0.055
+}
+
+// lut8SRGBToLinear maps 8-bit sRGB component values to linear-light values.
+var lut8SRGBToLinear [256]float64
+
+// lut16SRGBToLinear maps 16-bit sRGB component values to linear-light values.
+// It is built lazily on the first 16-bit resize.
+var (
+	lut16SRGBToLinearOnce sync.Once
+	lut16SRGBToLinearData [65536]float32
+)
+
+func lut16SRGBToLinear() *[65536]float32 {
+	lut16SRGBToLinearOnce.Do(func() {
+		for i := range lut16SRGBToLinearData {
+			lut16SRGBToLinearData[i] = float32(srgbToLinear(float64(i) / 65535))
+		}
+	})
+	return &lut16SRGBToLinearData
+}
+
+func init() {
+	for i := range lut8SRGBToLinear {
+		lut8SRGBToLinear[i] = srgbToLinear(float64(i) / 255)
+	}
+}
+
+// is16bitImage reports whether the image stores 16 bits per color component.
+func is16bitImage(img image.Image) bool {
+	switch img.(type) {
+	case *image.NRGBA64, *image.RGBA64, *image.Gray16:
+		return true
+	}
+	return false
+}
+
+// scan16 scans the given rectangular region of a 16-bit image into dst as
+// non-premultiplied 16-bit NRGBA values (4 uint16 values per pixel).
+func scan16(img image.Image, x1, y1, x2, y2 int, dst []uint16) {
+	switch img := img.(type) {
+	case *image.NRGBA64:
+		j := 0
+		for y := y1; y < y2; y++ {
+			i := y*img.Stride + x1*8
+			for x := x1; x < x2; x++ {
+				dst[j+0] = uint16(img.Pix[i+0])<<8 | uint16(img.Pix[i+1])
+				dst[j+1] = uint16(img.Pix[i+2])<<8 | uint16(img.Pix[i+3])
+				dst[j+2] = uint16(img.Pix[i+4])<<8 | uint16(img.Pix[i+5])
+				dst[j+3] = uint16(img.Pix[i+6])<<8 | uint16(img.Pix[i+7])
+				j += 4
+				i += 8
+			}
+		}
+
+	case *image.RGBA64:
+		j := 0
+		for y := y1; y < y2; y++ {
+			i := y*img.Stride + x1*8
+			for x := x1; x < x2; x++ {
+				r := uint16(img.Pix[i+0])<<8 | uint16(img.Pix[i+1])
+				g := uint16(img.Pix[i+2])<<8 | uint16(img.Pix[i+3])
+				b := uint16(img.Pix[i+4])<<8 | uint16(img.Pix[i+5])
+				a := uint16(img.Pix[i+6])<<8 | uint16(img.Pix[i+7])
+				switch a {
+				case 0:
+					r, g, b = 0, 0, 0
+				case 0xffff:
+				default:
+					r = uint16(uint32(r) * 0xffff / uint32(a))
+					g = uint16(uint32(g) * 0xffff / uint32(a))
+					b = uint16(uint32(b) * 0xffff / uint32(a))
+				}
+				dst[j+0] = r
+				dst[j+1] = g
+				dst[j+2] = b
+				dst[j+3] = a
+				j += 4
+				i += 8
+			}
+		}
+
+	case *image.Gray16:
+		j := 0
+		for y := y1; y < y2; y++ {
+			i := y*img.Stride + x1*2
+			for x := x1; x < x2; x++ {
+				c := uint16(img.Pix[i+0])<<8 | uint16(img.Pix[i+1])
+				dst[j+0] = c
+				dst[j+1] = c
+				dst[j+2] = c
+				dst[j+3] = 0xffff
+				j += 4
+				i += 2
+			}
+		}
+	}
+}
+
+// linearizeScanLine8 converts an 8-bit NRGBA scanline to linear-light
+// component values with alpha in range [0, 1].
+func linearizeScanLine8(src []uint8, dst []float64) {
+	for i := 0; i < len(src); i += 4 {
+		dst[i+0] = lut8SRGBToLinear[src[i+0]]
+		dst[i+1] = lut8SRGBToLinear[src[i+1]]
+		dst[i+2] = lut8SRGBToLinear[src[i+2]]
+		dst[i+3] = float64(src[i+3]) * (1.0 / 255.0)
+	}
+}
+
+// linearizeScanLine16 converts a 16-bit NRGBA scanline to linear-light
+// component values with alpha in range [0, 1].
+func linearizeScanLine16(src []uint16, dst []float64) {
+	lut := lut16SRGBToLinear()
+	for i := 0; i < len(src); i += 4 {
+		dst[i+0] = float64(lut[src[i+0]])
+		dst[i+1] = float64(lut[src[i+1]])
+		dst[i+2] = float64(lut[src[i+2]])
+		dst[i+3] = float64(src[i+3]) * (1.0 / 65535.0)
+	}
+}
+
+// filterWeights accumulates the premultiplied linear-light color of the
+// scanline pixels selected by the given filter weights.
+func filterWeights(weights []indexWeight, lin []float64) (r, g, b, a float64) {
+	for _, w := range weights {
+		i := w.index * 4
+		aw := lin[i+3] * w.weight
+		r += lin[i+0] * aw
+		g += lin[i+1] * aw
+		b += lin[i+2] * aw
+		a += aw
+	}
+	return
+}
+
+// putNRGBA64 stores four linear-light component values in range [0, 1] as
+// sRGB-encoded 16-bit NRGBA in d.
+func putNRGBA64(d []byte, r, g, b, a float64) {
+	putUint16(d[0:2], clamp16(linearToSrgb(r)*65535))
+	putUint16(d[2:4], clamp16(linearToSrgb(g)*65535))
+	putUint16(d[4:6], clamp16(linearToSrgb(b)*65535))
+	putUint16(d[6:8], clamp16(a*65535))
+}
+
+func putUint16(d []byte, v uint16) {
+	d[0] = uint8(v >> 8)
+	d[1] = uint8(v)
+}
 
 type indexWeight struct {
 	index  int
@@ -58,6 +224,12 @@ func precomputeWeights(dstSize, srcSize int, filter ResampleFilter) [][]indexWei
 // filter and returns the transformed image. If one of width or height is 0, the image aspect
 // ratio is preserved.
 //
+// Resampling is performed in the linear color space: sRGB-encoded source pixels are
+// linearized before filtering and converted back to sRGB on output. Color components are
+// weighted by the alpha channel (premultiplied) during interpolation to avoid color
+// fringes along transparent edges. 16-bit source images (NRGBA64, RGBA64, Gray16) are
+// processed at 16-bit precision.
+//
 // Example:
 //
 //	dstImage := imaging.Resize(srcImage, 800, 600, imaging.Lanczos)
@@ -96,44 +268,77 @@ func Resize(img image.Image, width, height int, filter ResampleFilter) *image.NR
 		return resizeNearest(img, dstW, dstH)
 	}
 
-	if srcW != dstW && srcH != dstH {
-		return resizeVertical(resizeHorizontal(img, dstW, filter), dstH, filter)
-	}
+	res := image.Image(img)
 	if srcW != dstW {
-		return resizeHorizontal(img, dstW, filter)
+		res = resizeHorizontal(res, dstW, filter)
 	}
-	return resizeVertical(img, dstH, filter)
-
+	if srcH != dstH {
+		res = resizeVertical(res, dstH, filter)
+	}
+	return toNRGBA8(res)
 }
 
-func resizeHorizontal(img image.Image, width int, filter ResampleFilter) *image.NRGBA {
+// toNRGBA8 converts a resize result to 8-bit NRGBA. 16-bit intermediate
+// results are converted with rounding.
+func toNRGBA8(img image.Image) *image.NRGBA {
+	if img, ok := img.(*image.NRGBA); ok {
+		return img
+	}
+	src := img.(*image.NRGBA64)
+	dst := image.NewNRGBA(image.Rect(0, 0, src.Rect.Dx(), src.Rect.Dy()))
+	for i := 0; i < len(dst.Pix); i++ {
+		v := uint32(uint16(src.Pix[i*2])<<8 | uint16(src.Pix[i*2+1]))
+		dst.Pix[i] = uint8((v*0xff + 0x7fff) / 0xffff)
+	}
+	return dst
+}
+
+func resizeHorizontal(img image.Image, width int, filter ResampleFilter) image.Image {
+	srcW := img.Bounds().Dx()
+	srcH := img.Bounds().Dy()
+	weights := precomputeWeights(width, srcW, filter)
+
+	if is16bitImage(img) {
+		dst := image.NewNRGBA64(image.Rect(0, 0, width, srcH))
+		parallel(0, srcH, func(ys <-chan int) {
+			scanLine := make([]uint16, srcW*4)
+			lin := make([]float64, srcW*4)
+			for y := range ys {
+				scan16(img, 0, y, srcW, y+1, scanLine)
+				linearizeScanLine16(scanLine, lin)
+				j0 := y * dst.Stride
+				for x := range weights {
+					r, g, b, a := filterWeights(weights[x], lin)
+					if a > 0 {
+						aInv := 1 / a
+						j := j0 + x*8
+						putNRGBA64(dst.Pix[j:j+8:j+8], r*aInv, g*aInv, b*aInv, a)
+					}
+				}
+			}
+		})
+		return dst
+	}
+
 	src := newScanner(img)
-	dst := image.NewNRGBA(image.Rect(0, 0, width, src.h))
-	weights := precomputeWeights(width, src.w, filter)
-	parallel(0, src.h, func(ys <-chan int) {
-		scanLine := make([]uint8, src.w*4)
+	dst := image.NewNRGBA(image.Rect(0, 0, width, srcH))
+	parallel(0, srcH, func(ys <-chan int) {
+		scanLine := make([]uint8, srcW*4)
+		lin := make([]float64, srcW*4)
 		for y := range ys {
-			src.scan(0, y, src.w, y+1, scanLine)
+			src.scan(0, y, srcW, y+1, scanLine)
+			linearizeScanLine8(scanLine, lin)
 			j0 := y * dst.Stride
 			for x := range weights {
-				var r, g, b, a float64
-				for _, w := range weights[x] {
-					i := w.index * 4
-					s := scanLine[i : i+4 : i+4]
-					aw := float64(s[3]) * w.weight
-					r += float64(s[0]) * aw
-					g += float64(s[1]) * aw
-					b += float64(s[2]) * aw
-					a += aw
-				}
-				if a != 0 {
+				r, g, b, a := filterWeights(weights[x], lin)
+				if a > 0 {
 					aInv := 1 / a
 					j := j0 + x*4
 					d := dst.Pix[j : j+4 : j+4]
-					d[0] = clamp(r * aInv)
-					d[1] = clamp(g * aInv)
-					d[2] = clamp(b * aInv)
-					d[3] = clamp(a)
+					d[0] = clamp(linearToSrgb(r*aInv) * 255)
+					d[1] = clamp(linearToSrgb(g*aInv) * 255)
+					d[2] = clamp(linearToSrgb(b*aInv) * 255)
+					d[3] = clamp(a * 255)
 				}
 			}
 		}
@@ -141,33 +346,50 @@ func resizeHorizontal(img image.Image, width int, filter ResampleFilter) *image.
 	return dst
 }
 
-func resizeVertical(img image.Image, height int, filter ResampleFilter) *image.NRGBA {
-	src := newScanner(img)
-	dst := image.NewNRGBA(image.Rect(0, 0, src.w, height))
-	weights := precomputeWeights(height, src.h, filter)
-	parallel(0, src.w, func(xs <-chan int) {
-		scanLine := make([]uint8, src.h*4)
-		for x := range xs {
-			src.scan(x, 0, x+1, src.h, scanLine)
-			for y := range weights {
-				var r, g, b, a float64
-				for _, w := range weights[y] {
-					i := w.index * 4
-					s := scanLine[i : i+4 : i+4]
-					aw := float64(s[3]) * w.weight
-					r += float64(s[0]) * aw
-					g += float64(s[1]) * aw
-					b += float64(s[2]) * aw
-					a += aw
+func resizeVertical(img image.Image, height int, filter ResampleFilter) image.Image {
+	srcW := img.Bounds().Dx()
+	srcH := img.Bounds().Dy()
+	weights := precomputeWeights(height, srcH, filter)
+
+	if is16bitImage(img) {
+		dst := image.NewNRGBA64(image.Rect(0, 0, srcW, height))
+		parallel(0, srcW, func(xs <-chan int) {
+			scanLine := make([]uint16, srcH*4)
+			lin := make([]float64, srcH*4)
+			for x := range xs {
+				scan16(img, x, 0, x+1, srcH, scanLine)
+				linearizeScanLine16(scanLine, lin)
+				for y := range weights {
+					r, g, b, a := filterWeights(weights[y], lin)
+					if a > 0 {
+						aInv := 1 / a
+						j := y*dst.Stride + x*8
+						putNRGBA64(dst.Pix[j:j+8:j+8], r*aInv, g*aInv, b*aInv, a)
+					}
 				}
-				if a != 0 {
+			}
+		})
+		return dst
+	}
+
+	src := newScanner(img)
+	dst := image.NewNRGBA(image.Rect(0, 0, srcW, height))
+	parallel(0, srcW, func(xs <-chan int) {
+		scanLine := make([]uint8, srcH*4)
+		lin := make([]float64, srcH*4)
+		for x := range xs {
+			src.scan(x, 0, x+1, srcH, scanLine)
+			linearizeScanLine8(scanLine, lin)
+			for y := range weights {
+				r, g, b, a := filterWeights(weights[y], lin)
+				if a > 0 {
 					aInv := 1 / a
 					j := y*dst.Stride + x*4
 					d := dst.Pix[j : j+4 : j+4]
-					d[0] = clamp(r * aInv)
-					d[1] = clamp(g * aInv)
-					d[2] = clamp(b * aInv)
-					d[3] = clamp(a)
+					d[0] = clamp(linearToSrgb(r*aInv) * 255)
+					d[1] = clamp(linearToSrgb(g*aInv) * 255)
+					d[2] = clamp(linearToSrgb(b*aInv) * 255)
+					d[3] = clamp(a * 255)
 				}
 			}
 		}

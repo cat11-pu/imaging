@@ -3,6 +3,7 @@ package imaging
 import (
 	"fmt"
 	"image"
+	"math"
 	"path/filepath"
 	"testing"
 )
@@ -30,7 +31,7 @@ func TestResize(t *testing.T) {
 			&image.NRGBA{
 				Rect:   image.Rect(0, 0, 1, 1),
 				Stride: 1 * 4,
-				Pix:    []uint8{0x55, 0x55, 0x55, 0xc0},
+				Pix:    []uint8{0x9c, 0x9d, 0x9d, 0xc0},
 			},
 		},
 		{
@@ -50,7 +51,7 @@ func TestResize(t *testing.T) {
 				Stride: 1 * 4,
 				Pix: []uint8{
 					0xff, 0x00, 0x00, 0x80,
-					0x00, 0x80, 0x80, 0xff,
+					0x00, 0xbc, 0xbc, 0xff,
 				},
 			},
 		},
@@ -70,7 +71,7 @@ func TestResize(t *testing.T) {
 				Rect:   image.Rect(0, 0, 2, 1),
 				Stride: 2 * 4,
 				Pix: []uint8{
-					0x00, 0xff, 0x00, 0x80, 0x80, 0x00, 0x80, 0xff,
+					0x00, 0xff, 0x00, 0x80, 0xbc, 0x00, 0xbc, 0xff,
 				},
 			},
 		},
@@ -152,9 +153,9 @@ func TestResize(t *testing.T) {
 				Stride: 4 * 4,
 				Pix: []uint8{
 					0x00, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x40, 0xff, 0x00, 0x00, 0xbf, 0xff, 0x00, 0x00, 0xff,
-					0x00, 0xff, 0x00, 0x40, 0x6e, 0x6d, 0x25, 0x70, 0xb0, 0x14, 0x3b, 0xcf, 0xbf, 0x00, 0x40, 0xff,
-					0x00, 0xff, 0x00, 0xbf, 0x14, 0xb0, 0x3b, 0xcf, 0x33, 0x33, 0x99, 0xef, 0x40, 0x00, 0xbf, 0xff,
-					0x00, 0xff, 0x00, 0xff, 0x00, 0xbf, 0x40, 0xff, 0x00, 0x40, 0xbf, 0xff, 0x00, 0x00, 0xff, 0xff,
+					0x00, 0xff, 0x00, 0x40, 0xaf, 0xaf, 0x6a, 0x70, 0xd9, 0x4e, 0x84, 0xcf, 0xe1, 0x00, 0x89, 0xff,
+					0x00, 0xff, 0x00, 0xbf, 0x4f, 0xd9, 0x84, 0xcf, 0x7b, 0x7c, 0xcc, 0xef, 0x89, 0x00, 0xe1, 0xff,
+					0x00, 0xff, 0x00, 0xff, 0x00, 0xe1, 0x89, 0xff, 0x00, 0x89, 0xe1, 0xff, 0x00, 0x00, 0xff, 0xff,
 				},
 			},
 		},
@@ -283,7 +284,7 @@ func TestFit(t *testing.T) {
 			&image.NRGBA{
 				Rect:   image.Rect(0, 0, 1, 1),
 				Stride: 1 * 4,
-				Pix:    []uint8{0x55, 0x55, 0x55, 0xc0},
+				Pix:    []uint8{0x9c, 0x9d, 0x9d, 0xc0},
 			},
 		},
 		{
@@ -301,7 +302,7 @@ func TestFit(t *testing.T) {
 			&image.NRGBA{
 				Rect:   image.Rect(0, 0, 1, 1),
 				Stride: 1 * 4,
-				Pix:    []uint8{0x55, 0x55, 0x55, 0xc0},
+				Pix:    []uint8{0x9c, 0x9d, 0x9d, 0xc0},
 			},
 		},
 		{
@@ -816,7 +817,7 @@ func TestThumbnail(t *testing.T) {
 			&image.NRGBA{
 				Rect:   image.Rect(0, 0, 1, 1),
 				Stride: 1 * 4,
-				Pix:    []uint8{0x55, 0x55, 0x55, 0xc0},
+				Pix:    []uint8{0x9c, 0x9d, 0x9d, 0xc0},
 			},
 		},
 		{
@@ -838,7 +839,7 @@ func TestThumbnail(t *testing.T) {
 			&image.NRGBA{
 				Rect:   image.Rect(0, 0, 1, 1),
 				Stride: 1 * 4,
-				Pix:    []uint8{0x55, 0x55, 0x55, 0xc0},
+				Pix:    []uint8{0x9c, 0x9d, 0x9d, 0xc0},
 			},
 		},
 		{
@@ -872,6 +873,278 @@ func TestThumbnail(t *testing.T) {
 			}
 		})
 	}
+}
+
+// srgbToLinearRef is an independent reference implementation of the sRGB EOTF
+// used by the resize tests below.
+func srgbToLinearRef(c float64) float64 {
+	if c <= 0.04045 {
+		return c / 12.92
+	}
+	return math.Pow((c+0.055)/1.055, 2.4)
+}
+
+// linearToSrgbRef is an independent reference implementation of the inverse
+// sRGB EOTF used by the resize tests below.
+func linearToSrgbRef(c float64) float64 {
+	if c <= 0.0031308 {
+		return 12.92 * c
+	}
+	return 1.055*math.Pow(c, 1.0/2.4) - 0.055
+}
+
+// TestResizeLinearSpace verifies that resampling is performed in the linear
+// color space: averaging black and white must produce the linear-light 50%
+// gray (~188 in sRGB), not the gamma-space midpoint (128) that shows up as a
+// dark band in downscaled gradients.
+func TestResizeLinearSpace(t *testing.T) {
+	// 2x1 black+white downscaled to 1x1.
+	src := &image.NRGBA{
+		Rect:   image.Rect(0, 0, 2, 1),
+		Stride: 2 * 4,
+		Pix: []uint8{
+			0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff,
+		},
+	}
+	got := Resize(src, 1, 1, Box)
+	want := linearToSrgbRef(0.5) * 255 // 187.5
+	if absint(int(got.Pix[0])-int(want+0.5)) > 1 {
+		t.Fatalf("black+white average: got %d want %.1f", got.Pix[0], want)
+	}
+	t.Logf("black+white average = %d (linear-space ideal %.1f, gamma-space would give 128)",
+		got.Pix[0], want)
+
+	// Full 0..255 gradient downscaled 2x, compared to the linear-space ideal.
+	grad := image.NewNRGBA(image.Rect(0, 0, 256, 1))
+	for x := 0; x < 256; x++ {
+		for c := 0; c < 3; c++ {
+			grad.Pix[x*4+c] = uint8(x)
+		}
+		grad.Pix[x*4+3] = 0xff
+	}
+	d := Resize(grad, 128, 1, Box)
+	var maxDev float64
+	for x := 0; x < 128; x++ {
+		ideal := linearToSrgbRef((srgbToLinearRef(float64(2*x)/255)+
+			srgbToLinearRef(float64(2*x+1)/255))/2) * 255
+		if dev := math.Abs(float64(d.Pix[x*4]) - ideal); dev > maxDev {
+			maxDev = dev
+		}
+	}
+	t.Logf("gradient 256->128: max deviation from linear-space ideal = %.2f", maxDev)
+	if maxDev > 1.5 {
+		t.Fatalf("gradient deviates from linear-space ideal by %.2f > 1.5", maxDev)
+	}
+}
+
+// TestResizePremultipliedAlpha verifies that transparent pixels are
+// premultiplied before interpolation and unpremultiplied afterwards, so
+// transparent edges keep their color instead of fading to black.
+func TestResizePremultipliedAlpha(t *testing.T) {
+	testCases := []struct {
+		name string
+		src  *image.NRGBA
+		w, h int
+		f    ResampleFilter
+		want []uint8
+	}{
+		{
+			"transparent black + opaque red",
+			&image.NRGBA{
+				Rect:   image.Rect(0, 0, 2, 1),
+				Stride: 2 * 4,
+				Pix: []uint8{
+					0x00, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0xff,
+				},
+			},
+			1, 1,
+			Box,
+			[]uint8{0xff, 0x00, 0x00, 0x80},
+		},
+		{
+			"transparent white + opaque red",
+			&image.NRGBA{
+				Rect:   image.Rect(0, 0, 2, 1),
+				Stride: 2 * 4,
+				Pix: []uint8{
+					0xff, 0xff, 0xff, 0x00, 0xff, 0x00, 0x00, 0xff,
+				},
+			},
+			1, 1,
+			Box,
+			[]uint8{0xff, 0x00, 0x00, 0x80},
+		},
+		{
+			"transparent to opaque edge upscale",
+			&image.NRGBA{
+				Rect:   image.Rect(0, 0, 2, 1),
+				Stride: 2 * 4,
+				Pix: []uint8{
+					0x00, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0xff,
+				},
+			},
+			4, 1,
+			Linear,
+			[]uint8{
+				0x00, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x40,
+				0xff, 0x00, 0x00, 0xbf, 0xff, 0x00, 0x00, 0xff,
+			},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Resize(tc.src, tc.w, tc.h, tc.f)
+			if !compareNRGBA(got, &image.NRGBA{
+				Rect:   image.Rect(0, 0, tc.w, tc.h),
+				Stride: tc.w * 4,
+				Pix:    tc.want,
+			}, 0) {
+				t.Fatalf("got %v want %v", got.Pix, tc.want)
+			}
+			t.Logf("%s: got %v", tc.name, got.Pix)
+		})
+	}
+}
+
+// TestResize16BitPrecision verifies the 16-bit resize path (NRGBA64, RGBA64,
+// Gray16) against a float64 linear-space reference. The maximum per-channel
+// difference (in 8-bit units) must not exceed 1.5.
+func TestResize16BitPrecision(t *testing.T) {
+	const (
+		srcSize = 64
+		dstSize = 16
+		maxDiff = 1.5
+	)
+
+	// reference computes the ideal linear-space box-downscale (factor 4) of
+	// the 16-bit NRGBA pixels returned by px.
+	reference := func(px func(x, y int) (r, g, b, a uint16)) []float64 {
+		out := make([]float64, dstSize*dstSize*4)
+		for oy := 0; oy < dstSize; oy++ {
+			for ox := 0; ox < dstSize; ox++ {
+				var sr, sg, sb, sa float64
+				for dy := 0; dy < 4; dy++ {
+					for dx := 0; dx < 4; dx++ {
+						r, g, b, a := px(ox*4+dx, oy*4+dy)
+						af := float64(a) / 65535
+						sr += srgbToLinearRef(float64(r)/65535) * af
+						sg += srgbToLinearRef(float64(g)/65535) * af
+						sb += srgbToLinearRef(float64(b)/65535) * af
+						sa += af
+					}
+				}
+				i := (oy*dstSize + ox) * 4
+				if sa > 0 {
+					out[i+0] = linearToSrgbRef(sr/sa) * 255
+					out[i+1] = linearToSrgbRef(sg/sa) * 255
+					out[i+2] = linearToSrgbRef(sb/sa) * 255
+					out[i+3] = sa / 16 * 255
+				}
+			}
+		}
+		return out
+	}
+
+	maxChannelDiff := func(got *image.NRGBA, want []float64) float64 {
+		var maxDiff float64
+		for i := 0; i < len(got.Pix); i++ {
+			if d := math.Abs(float64(got.Pix[i]) - want[i]); d > maxDiff {
+				maxDiff = d
+			}
+		}
+		return maxDiff
+	}
+
+	t.Run("NRGBA64", func(t *testing.T) {
+		src := image.NewNRGBA64(image.Rect(0, 0, srcSize, srcSize))
+		for y := 0; y < srcSize; y++ {
+			for x := 0; x < srcSize; x++ {
+				i := y*src.Stride + x*8
+				r := uint16((x*1032 + y*31) % 65536)
+				g := uint16((x*517 + y*1030) % 65536)
+				b := uint16((y*1032 + x*17) % 65536)
+				a := uint16(20000 + (x*700+y*13)%45536)
+				if x < 8 && y < 8 {
+					a = 0 // fully transparent corner
+				}
+				src.Pix[i+0], src.Pix[i+1] = uint8(r>>8), uint8(r)
+				src.Pix[i+2], src.Pix[i+3] = uint8(g>>8), uint8(g)
+				src.Pix[i+4], src.Pix[i+5] = uint8(b>>8), uint8(b)
+				src.Pix[i+6], src.Pix[i+7] = uint8(a>>8), uint8(a)
+			}
+		}
+		got := Resize(src, dstSize, dstSize, Box)
+		want := reference(func(x, y int) (r, g, b, a uint16) {
+			i := y*src.Stride + x*8
+			return uint16(src.Pix[i+0])<<8 | uint16(src.Pix[i+1]),
+				uint16(src.Pix[i+2])<<8 | uint16(src.Pix[i+3]),
+				uint16(src.Pix[i+4])<<8 | uint16(src.Pix[i+5]),
+				uint16(src.Pix[i+6])<<8 | uint16(src.Pix[i+7])
+		})
+		diff := maxChannelDiff(got, want)
+		t.Logf("NRGBA64 64x64 -> 16x16 box: max channel diff = %.3f (limit %.1f)", diff, maxDiff)
+		if diff > maxDiff {
+			t.Fatalf("max channel diff %.3f exceeds %.1f", diff, maxDiff)
+		}
+	})
+
+	t.Run("RGBA64", func(t *testing.T) {
+		src := image.NewRGBA64(image.Rect(0, 0, srcSize, srcSize))
+		for y := 0; y < srcSize; y++ {
+			for x := 0; x < srcSize; x++ {
+				i := y*src.Stride + x*8
+				a := uint32(30000 + (x*500+y*29)%35536)
+				r := uint32((x*771+y*7)%30000) * a / 0xffff
+				g := uint32((x*333+y*887)%30000) * a / 0xffff
+				b := uint32((y*555+x*91)%30000) * a / 0xffff
+				src.Pix[i+0], src.Pix[i+1] = uint8(r>>8), uint8(r)
+				src.Pix[i+2], src.Pix[i+3] = uint8(g>>8), uint8(g)
+				src.Pix[i+4], src.Pix[i+5] = uint8(b>>8), uint8(b)
+				src.Pix[i+6], src.Pix[i+7] = uint8(a>>8), uint8(a)
+			}
+		}
+		got := Resize(src, dstSize, dstSize, Box)
+		want := reference(func(x, y int) (r, g, b, a uint16) {
+			i := y*src.Stride + x*8
+			av := uint32(uint16(src.Pix[i+6])<<8 | uint16(src.Pix[i+7]))
+			rv := uint32(uint16(src.Pix[i+0])<<8 | uint16(src.Pix[i+1]))
+			gv := uint32(uint16(src.Pix[i+2])<<8 | uint16(src.Pix[i+3]))
+			bv := uint32(uint16(src.Pix[i+4])<<8 | uint16(src.Pix[i+5]))
+			if av > 0 {
+				rv = rv * 0xffff / av
+				gv = gv * 0xffff / av
+				bv = bv * 0xffff / av
+			}
+			return uint16(rv), uint16(gv), uint16(bv), uint16(av)
+		})
+		diff := maxChannelDiff(got, want)
+		t.Logf("RGBA64 64x64 -> 16x16 box: max channel diff = %.3f (limit %.1f)", diff, maxDiff)
+		if diff > maxDiff {
+			t.Fatalf("max channel diff %.3f exceeds %.1f", diff, maxDiff)
+		}
+	})
+
+	t.Run("Gray16", func(t *testing.T) {
+		src := image.NewGray16(image.Rect(0, 0, srcSize, srcSize))
+		for y := 0; y < srcSize; y++ {
+			for x := 0; x < srcSize; x++ {
+				i := y*src.Stride + x*2
+				v := uint16((x*777 + y*333) % 65536)
+				src.Pix[i+0], src.Pix[i+1] = uint8(v>>8), uint8(v)
+			}
+		}
+		got := Resize(src, dstSize, dstSize, Box)
+		want := reference(func(x, y int) (r, g, b, a uint16) {
+			i := y*src.Stride + x*2
+			v := uint16(src.Pix[i+0])<<8 | uint16(src.Pix[i+1])
+			return v, v, v, 0xffff
+		})
+		diff := maxChannelDiff(got, want)
+		t.Logf("Gray16 64x64 -> 16x16 box: max channel diff = %.3f (limit %.1f)", diff, maxDiff)
+		if diff > maxDiff {
+			t.Fatalf("max channel diff %.3f exceeds %.1f", diff, maxDiff)
+		}
+	})
 }
 
 func BenchmarkResize(b *testing.B) {
