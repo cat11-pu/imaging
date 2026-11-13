@@ -139,6 +139,39 @@ Original image                     | Hue = 60                                   
 -----------------------------------|----------------------------------------------|---------------------------------------------
 ![srcImage](testdata/flowers_small.png) | ![dstImage](testdata/out_hue_p60.png) | ![dstImage](testdata/out_hue_m60.png)
 
+### Denoising (night surveillance)
+
+Two edge-preserving denoising filters are provided for noisy low-light /
+night-time footage. Both accept a `DenoiseParams` value; passing `nil` applies
+defaults tuned for night surveillance.
+
+- `MedianFilter` uses a square median window. It removes salt-and-pepper
+  (impulse) noise and never produces blocky artifacts because every output
+  value is an actual input pixel.
+- `BilateralFilter` combines a spatial Gaussian weight with a luminance
+  similarity (range) Gaussian weight, smoothing flat noisy regions while
+  retaining edges.
+
+```go
+// Night-tuned defaults (median 3x3; bilateral radius=1, sigmaRange=32).
+medianDst := imaging.MedianFilter(srcImage, nil)
+bilateralDst := imaging.BilateralFilter(srcImage, nil)
+
+// Custom parameters.
+medianDst = imaging.MedianFilter(srcImage, &imaging.DenoiseParams{Radius: 2})
+bilateralDst = imaging.BilateralFilter(srcImage, &imaging.DenoiseParams{
+    Radius:       2,
+    SigmaSpatial: 2.0,
+    SigmaRange:   32.0,
+})
+```
+
+Both filters run in parallel over rows and use integer fixed-point weights.
+The `cmd/nightdenoise` program reproduces the evaluation on synthetic night
+scenes (static, dynamic and low-light forensics), emitting before/after
+comparison images, PSNR / edge-gradient / block-artifact metrics, per-image
+timing and a 40-megapixel benchmark into `artifacts/denoise`.
+
 ## FAQ
 
 ### Incorrect image orientation after processing (e.g. an image appears rotated after resizing)
